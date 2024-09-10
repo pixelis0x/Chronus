@@ -16,8 +16,11 @@ import {StateLibrary} from "v4-core/src/libraries/StateLibrary.sol";
 import {PositionConfig} from "v4-periphery/src/libraries/PositionConfig.sol";
 
 import {IPositionManager} from "v4-periphery/src/interfaces/IPositionManager.sol";
+
 import {EasyPosm} from "./utils/EasyPosm.sol";
 import {Fixtures} from "./utils/Fixtures.sol";
+
+import {IStrategy, DefaultStrategy} from "../src/DefaultStrategy.sol";
 
 contract CounterTest is Test, Fixtures {
     using EasyPosm for IPositionManager;
@@ -31,6 +34,8 @@ contract CounterTest is Test, Fixtures {
     uint256 tokenId;
     PositionConfig config;
 
+    IStrategy strategy;
+
     function setUp() public {
         // creates the pool manager, utility routers, and test tokens
         deployFreshManagerAndRouters();
@@ -42,7 +47,7 @@ contract CounterTest is Test, Fixtures {
         address flags = address(
             uint160(
                 Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.BEFORE_ADD_LIQUIDITY_FLAG
-                    | Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG
+                    | Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG | Hooks.AFTER_INITIALIZE_FLAG
             ) ^ (0x4444 << 144) // Namespace the hook to avoid collisions
         );
         bytes memory constructorArgs = abi.encode(manager); //Add all the necessary constructor arguments from the hook
@@ -52,7 +57,13 @@ contract CounterTest is Test, Fixtures {
         // Create the pool
         key = PoolKey(currency0, currency1, 3000, 60, IHooks(hook));
         poolId = key.toId();
-        manager.initialize(key, SQRT_PRICE_1_1, ZERO_BYTES);
+
+        // Deploy strategy
+        strategy = new DefaultStrategy();
+
+        // Create the pool
+        bytes memory afterInitializeParams = abi.encode(address(strategy));
+        manager.initialize(key, SQRT_PRICE_1_1, afterInitializeParams);
 
         // Provide full-range liquidity to the pool
         config = PositionConfig({
@@ -71,45 +82,8 @@ contract CounterTest is Test, Fixtures {
         );
     }
 
-    function testCounterHooks() public {
-        // positions were created in setup()
-        assertEq(hook.beforeAddLiquidityCount(poolId), 1);
-        assertEq(hook.beforeRemoveLiquidityCount(poolId), 0);
-
-        assertEq(hook.beforeSwapCount(poolId), 0);
-        assertEq(hook.afterSwapCount(poolId), 0);
-
-        // Perform a test swap //
-        bool zeroForOne = true;
-        int256 amountSpecified = -1e18; // negative number indicates exact input swap!
-        BalanceDelta swapDelta = swap(key, zeroForOne, amountSpecified, ZERO_BYTES);
-        // ------------------- //
-
-        assertEq(int256(swapDelta.amount0()), amountSpecified);
-
-        assertEq(hook.beforeSwapCount(poolId), 1);
-        assertEq(hook.afterSwapCount(poolId), 1);
-    }
-
-    function testLiquidityHooks() public {
-        // positions were created in setup()
-        assertEq(hook.beforeAddLiquidityCount(poolId), 1);
-        assertEq(hook.beforeRemoveLiquidityCount(poolId), 0);
-
-        // remove liquidity
-        uint256 liquidityToRemove = 1e18;
-        posm.decreaseLiquidity(
-            tokenId,
-            config,
-            liquidityToRemove,
-            MAX_SLIPPAGE_REMOVE_LIQUIDITY,
-            MAX_SLIPPAGE_REMOVE_LIQUIDITY,
-            address(this),
-            block.timestamp,
-            ZERO_BYTES
-        );
-
-        assertEq(hook.beforeAddLiquidityCount(poolId), 1);
-        assertEq(hook.beforeRemoveLiquidityCount(poolId), 1);
+    function testAfterInitialize() public {
+        // pool is initialized with proper strategy
+        assertEq(address(strategy), hook.strategy());
     }
 }
