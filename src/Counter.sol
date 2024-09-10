@@ -10,10 +10,27 @@ import {PoolId, PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
 import {BalanceDelta} from "v4-core/src/types/BalanceDelta.sol";
 import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "v4-core/src/types/BeforeSwapDelta.sol";
 
+import {Currency} from "v4-core/src/types/Currency.sol";
+import {LPFeeLibrary} from "v4-core/src/libraries/LPFeeLibrary.sol";
+import {IStrategy} from "./DefaultStrategy.sol";
+import {BeforeSwapDelta, toBeforeSwapDelta} from "v4-core/src/types/BeforeSwapDelta.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
+import {Pool} from "v4-core/src/libraries/Pool.sol";
+import {StateLibrary} from "v4-core/src/libraries/StateLibrary.sol";
+
 contract Counter is BaseHook {
     using PoolIdLibrary for PoolKey;
+    using SafeCast for int256;
+    using SafeCast for uint256;
+    using Pool for Pool.State;
+    using StateLibrary for IPoolManager;
 
     address public strategy;
+    address public manager;
+    uint256 public lastPaidTimestamp;
+    address public feeRecipient;
+
+    uint24 DEFAULT_SWAP_FEE = 3000;
 
     constructor(IPoolManager _poolManager) BaseHook(_poolManager) {}
 
@@ -39,19 +56,41 @@ contract Counter is BaseHook {
             afterSwap: true,
             beforeDonate: false,
             afterDonate: false,
-            beforeSwapReturnDelta: false,
+            beforeSwapReturnDelta: true,
             afterSwapReturnDelta: false,
             afterAddLiquidityReturnDelta: false,
             afterRemoveLiquidityReturnDelta: false
         });
     }
 
-    function beforeSwap(address, PoolKey calldata key, IPoolManager.SwapParams calldata, bytes calldata)
+    function beforeSwap(address, PoolKey calldata key, IPoolManager.SwapParams calldata params, bytes calldata)
         external
         override
         returns (bytes4, BeforeSwapDelta, uint24)
     {
-        return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
+        _payLease(key);
+
+        if (address(strategy) == address(0)) {
+            return
+                (this.beforeSwap.selector, toBeforeSwapDelta(0, 0), DEFAULT_SWAP_FEE | LPFeeLibrary.OVERRIDE_FEE_FLAG);
+        }
+
+        uint128 fee = IStrategy(strategy).getFee();
+        int256 fees = params.amountSpecified * uint256(fee).toInt256() / 1e6;
+        int256 absFees = fees > 0 ? fees : -fees;
+
+        bool exactOut = params.amountSpecified > 0;
+        Currency feeCurrency = exactOut != params.zeroForOne ? key.currency0 : key.currency1;
+
+        poolManager.take(feeCurrency, feeRecipient, absFees.toUint256());
+
+        return (this.beforeSwap.selector, toBeforeSwapDelta(absFees.toInt128(), 0), LPFeeLibrary.OVERRIDE_FEE_FLAG);
+    }
+
+    function _payLease(PoolKey calldata key) internal {
+        // get current pool liquidity
+        PoolId id = key.toId();
+        uint128 liquidity = StateLibrary.getLiquidity(poolManager, id);
     }
 
     function afterSwap(address, PoolKey calldata key, IPoolManager.SwapParams calldata, BalanceDelta, bytes calldata)
