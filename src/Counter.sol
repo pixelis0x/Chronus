@@ -17,6 +17,10 @@ import {BeforeSwapDelta, toBeforeSwapDelta} from "v4-core/src/types/BeforeSwapDe
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {Pool} from "v4-core/src/libraries/Pool.sol";
 import {StateLibrary} from "v4-core/src/libraries/StateLibrary.sol";
+import {TickMath} from "v4-core/src/libraries/TickMath.sol";
+
+// import console
+import "forge-std/console.sol";
 
 contract Counter is BaseHook {
     using PoolIdLibrary for PoolKey;
@@ -29,6 +33,7 @@ contract Counter is BaseHook {
     address public manager;
     uint256 public lastPaidTimestamp;
     address public feeRecipient;
+    uint256 public leaseIv;
 
     uint24 DEFAULT_SWAP_FEE = 3000;
 
@@ -88,10 +93,31 @@ contract Counter is BaseHook {
     }
 
     function _payLease(PoolKey calldata key) internal {
-        // get current pool liquidity
         PoolId id = key.toId();
-        uint128 liquidity = StateLibrary.getLiquidity(poolManager, id);
+        // get current pool liquidity
+        uint128 liquidity = poolManager.getLiquidity(id);
+        // current price
+        (, int24 tick,,) = poolManager.getSlot0(id);
+        // get tick info
+        int24 lowerTick = tick / key.tickSpacing * key.tickSpacing;
+        int24 upperTick = lowerTick + key.tickSpacing;
+        (uint128 liquidityGross,,,) = poolManager.getTickInfo(id, roundedTick);
+        // get tick token0 value
+        uint160 sqrtPriceX96 = TickMath.getSqrtRatioAtTick(tick);
+        uint160 sqrtPriceLower = TickMath.getSqrtRatioAtTick(lowerTick);
+        uint160 sqrtPriceUpper = TickMath.getSqrtRatioAtTick(upperTick);
+        uint160 sqrtPriceGross = sqrtPriceLower * sqrtPriceUpper;
+        // get token0 value
+        uint256 token0Value = liquidityGross * sqrtPriceGross / sqrtPriceX96;
+        // get token1 value
+        uint256 token1Value = liquidityGross * sqrtPriceX96 / sqrtPriceGross;
+
+        console.log("liquidityGross", liquidityGross);
     }
+
+    // getLeaseIncentive() piblic view returns (uint256) {
+    //     return leaseIv * (block.timestamp - lastPaidTimestamp);
+    // }
 
     function afterSwap(address, PoolKey calldata key, IPoolManager.SwapParams calldata, BalanceDelta, bytes calldata)
         external
