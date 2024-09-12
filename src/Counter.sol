@@ -19,6 +19,8 @@ import {Pool} from "v4-core/src/libraries/Pool.sol";
 import {StateLibrary} from "v4-core/src/libraries/StateLibrary.sol";
 import {TickMath} from "v4-core/src/libraries/TickMath.sol";
 
+import {SqrtPriceMath} from "v4-core/src/libraries/SqrtPriceMath.sol";
+
 // import console
 import "forge-std/console.sol";
 
@@ -26,6 +28,8 @@ contract Counter is BaseHook {
     using PoolIdLibrary for PoolKey;
     using SafeCast for int256;
     using SafeCast for uint256;
+    using SafeCast for uint128;
+    using SafeCast for int128;
     using Pool for Pool.State;
     using StateLibrary for IPoolManager;
 
@@ -33,7 +37,8 @@ contract Counter is BaseHook {
     address public manager;
     uint256 public lastPaidTimestamp;
     address public feeRecipient;
-    uint256 public leaseIv;
+    uint256 public leaseIv; // in 1e6 units
+    bool public leaseInToken0;
 
     uint24 DEFAULT_SWAP_FEE = 3000;
 
@@ -45,6 +50,7 @@ contract Counter is BaseHook {
         returns (bytes4)
     {
         (strategy) = abi.decode(params, (address));
+        leaseIv = 1e6; // 100%
 
         return BaseHook.afterInitialize.selector;
     }
@@ -93,31 +99,35 @@ contract Counter is BaseHook {
     }
 
     function _payLease(PoolKey calldata key) internal {
+        // skip if lease was already paid
+        if (lastPaidTimestamp == block.timestamp) return;
+
         PoolId id = key.toId();
         // get current pool liquidity
         uint128 liquidity = poolManager.getLiquidity(id);
         // current price
         (, int24 tick,,) = poolManager.getSlot0(id);
         // get tick info
-        int24 lowerTick = tick / key.tickSpacing * key.tickSpacing;
-        int24 upperTick = lowerTick + key.tickSpacing;
-        (uint128 liquidityGross,,,) = poolManager.getTickInfo(id, roundedTick);
-        // get tick token0 value
-        uint160 sqrtPriceX96 = TickMath.getSqrtRatioAtTick(tick);
-        uint160 sqrtPriceLower = TickMath.getSqrtRatioAtTick(lowerTick);
-        uint160 sqrtPriceUpper = TickMath.getSqrtRatioAtTick(upperTick);
-        uint160 sqrtPriceGross = sqrtPriceLower * sqrtPriceUpper;
-        // get token0 value
-        uint256 token0Value = liquidityGross * sqrtPriceGross / sqrtPriceX96;
-        // get token1 value
-        uint256 token1Value = liquidityGross * sqrtPriceX96 / sqrtPriceGross;
+        uint160 sqrtPriceX96 = TickMath.getSqrtPriceAtTick(tick);
 
-        console.log("liquidityGross", liquidityGross);
+        uint256 annualLeaseIncentive = getAnnualLeaseAmount(key.fee, liquidity, sqrtPriceX96);
+
+        uint256 leaseIncentive = annualLeaseIncentive * (block.timestamp - lastPaidTimestamp) / 365 days;
+
+        // donate leaseIncentive to the pool
+        poolManager.take(key.currency0, address(this), leaseIncentive);
     }
 
-    // getLeaseIncentive() piblic view returns (uint256) {
-    //     return leaseIv * (block.timestamp - lastPaidTimestamp);
-    // }
+    function getAnnualLeaseAmount(uint24 poolFee, uint128 liquidity, uint160 sqrtPriceX96)
+        public
+        view
+        returns (uint256)
+    {
+        uint256 currentLiquidityInToken0 = uint256(liquidity) * 2 ** 96 / sqrtPriceX96 * poolFee / 1e6;
+        console.log("currentLiquidityInToken0", currentLiquidityInToken0);
+
+        return poolFee * currentLiquidityInToken0 * (leaseIv / 2 / poolFee) ** 2 / 1e6;
+    }
 
     function afterSwap(address, PoolKey calldata key, IPoolManager.SwapParams calldata, BalanceDelta, bytes calldata)
         external

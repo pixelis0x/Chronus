@@ -87,4 +87,19 @@ contract CounterTest is Test, Fixtures {
         // pool is initialized with proper strategy
         assertEq(address(strategy), hook.strategy());
     }
+
+    function testTickTvl() public {
+        // real world estimations check for usdc-weth 0.05% pool
+        uint24 poolFee = 500;
+        uint160 sqrtPriceX96 = 1635008161405954009941460910080473;
+        uint128 liquidity = 7464885187306878302;
+
+        uint256 annualLease = hook.getAnnualLeaseAmount(poolFee, liquidity, sqrtPriceX96);
+
+        assertEq(annualLease, 90432138311000);
+        uint256 currentLiquidityInToken0 = uint256(liquidity) * 2 ** 96 / sqrtPriceX96 / 2;
+
+        // check apr
+        assertEq(annualLease * 1e6 / currentLiquidityInToken0, 499999); // 50% apr
+    }
 }
