@@ -11,7 +11,7 @@ import {BalanceDelta} from "v4-core/src/types/BalanceDelta.sol";
 import {PoolId, PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
 import {CurrencyLibrary, Currency} from "v4-core/src/types/Currency.sol";
 import {PoolSwapTest} from "v4-core/src/test/PoolSwapTest.sol";
-import {Counter} from "../src/Counter.sol";
+import {Counter} from "../src/ChronusHook.sol";
 import {StateLibrary} from "v4-core/src/libraries/StateLibrary.sol";
 import {PositionConfig} from "v4-periphery/src/libraries/PositionConfig.sol";
 
@@ -22,7 +22,7 @@ import {Fixtures} from "./utils/Fixtures.sol";
 
 import {IStrategy, DefaultStrategy} from "../src/DefaultStrategy.sol";
 
-contract CounterTest is Test, Fixtures {
+contract ChronusHookTest is Test, Fixtures {
     using EasyPosm for IPositionManager;
     using PoolIdLibrary for PoolKey;
     using CurrencyLibrary for Currency;
@@ -51,8 +51,9 @@ contract CounterTest is Test, Fixtures {
                     | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG
             ) ^ (0x4444 << 144) // Namespace the hook to avoid collisions
         );
-        bytes memory constructorArgs = abi.encode(manager); //Add all the necessary constructor arguments from the hook
-        deployCodeTo("Counter.sol:Counter", constructorArgs, flags);
+        // TODO: Add all the necessary constructor arguments from the hook
+        bytes memory constructorArgs = abi.encode(manager);
+        deployCodeTo("ChronusHook.sol:ChronusHook", constructorArgs, flags);
         hook = Counter(flags);
 
         // Create the pool
@@ -94,7 +95,7 @@ contract CounterTest is Test, Fixtures {
         uint160 sqrtPriceX96 = 1635008161405954009941460910080473;
         uint128 liquidity = 7464885187306878302;
 
-        uint256 annualLease = hook.getAnnualLeaseAmount(poolFee, liquidity, sqrtPriceX96);
+        uint256 annualLease = hook.getAnnualLeaseAmount(poolFee, liquidity, sqrtPriceX96, 1);
 
         assertEq(annualLease, 90432138311000);
         uint256 currentLiquidityInToken0 = uint256(liquidity) * 2 ** 96 / sqrtPriceX96 / 2;
@@ -102,4 +103,6 @@ contract CounterTest is Test, Fixtures {
         // check apr
         assertEq(annualLease * 1e6 / currentLiquidityInToken0, 499999); // 50% apr
     }
+
+    function testLeaseIsPaidToLps() public {}
 }
