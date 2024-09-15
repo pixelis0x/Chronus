@@ -8,7 +8,8 @@ import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
 import {BalanceDelta} from "v4-core/src/types/BalanceDelta.sol";
 import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "v4-core/src/types/BeforeSwapDelta.sol";
-import {Currency} from "v4-core/src/types/Currency.sol";
+import {Currency, CurrencyLibrary} from "v4-core/src/types/Currency.sol";
+import {CurrencySettler} from "v4-core/test/utils/CurrencySettler.sol";
 import {Hooks} from "v4-core/src/libraries/Hooks.sol";
 import {LPFeeLibrary} from "v4-core/src/libraries/LPFeeLibrary.sol";
 import {BeforeSwapDelta, toBeforeSwapDelta} from "v4-core/src/types/BeforeSwapDelta.sol";
@@ -20,10 +21,11 @@ import {BaseHook} from "v4-periphery/src/base/hooks/BaseHook.sol";
 
 import {IStrategy} from "./DefaultStrategy.sol";
 
-// import console
 import "forge-std/console.sol";
 
 contract ChronusHook is BaseHook {
+    using CurrencyLibrary for Currency;
+    using CurrencySettler for Currency;
     using PoolIdLibrary for PoolKey;
     using SafeCast for int256;
     using SafeCast for uint256;
@@ -48,22 +50,59 @@ contract ChronusHook is BaseHook {
 
     struct PoolState {
         Bid activeBid;
+        Bid nextBid;
         bool leaseInToken0;
         uint256 lastPaidTimestamp;
+        uint256 activeBidLockedUntil;
+        uint256 nextBidDelayedUntil;
     }
 
     uint24 DEFAULT_SWAP_FEE = 3000;
+    uint256 nextBidDelay = 10 minutes;
+    uint256 period = 1 hours;
 
     mapping(PoolId => mapping(address => uint256)) public collateral;
     mapping(PoolId => PoolState) public pools;
 
+    uint256 MIN_IV_INCREASE = 0.01e6;   // 1%
+
     constructor(IPoolManager _poolManager) BaseHook(_poolManager) {}
 
-    /// @notice Deposit tokens into this contract. Deposits are used to cover rent payments as the manager.
-    function depositCollateral(PoolKey calldata key, uint256 amount) external {
-        // Deposit 6909 claim tokens to Uniswap V4 PoolManager. The claim tokens are owned by this contract.
-        poolManager.unlock(abi.encode(CallbackData(key, msg.sender, amount, 0)));
-        collateral[key.toId()][msg.sender] += amount;
+    function placeBid(PoolKey calldata key, address strategy, address feeRecipient, uint256 leaseIv) external {
+        PoolId id = key.toId();
+        PoolState storage pool = pools[id];
+
+        // bid should be MIN_IV_INCREASE higher than another next bid
+        require(leaseIv > pool.nextBid.leaseIv + MIN_IV_INCREASE, "Bid should be higher than next bid");
+        pool.nextBid = Bid(strategy, msg.sender, feeRecipient, leaseIv);
+        pool.nextBidDelayedUntil = block.timestamp + nextBidDelay;
+    }
+
+    function _proceedWithState(PoolKey calldata key) internal {
+        // TODO: check next bid delay time
+        PoolId id = key.toId();
+        PoolState storage pool = pools[id];
+        // if there is a next bid and current bid delay is passed
+        if (pool.nextBid.strategy != address(0) && block.timestamp > pool.activeBidLockedUntil) {
+            // if current bid period passed
+            if (block.timestamp > pool.activeBidLockedUntil) {
+                //if next manager is the same as current, just update active bid
+                if (pool.activeBid.manager == pool.nextBid.manager) {
+                    pool.activeBid = pool.nextBid;
+                    pool.activeBidLockedUntil = block.timestamp + period;
+                    pool.nextBid = Bid(address(0), address(0), address(0), 0);
+                }
+                // if next manager is not equal to current, update it only if there is increase in iv or if no active bid
+                else if (
+                    (pool.nextBid.leaseIv > pool.activeBid.leaseIv + MIN_IV_INCREASE)
+                        || pool.activeBid.strategy == address(0)
+                ) {
+                    pool.activeBid = pool.nextBid;
+                    pool.activeBidLockedUntil = block.timestamp + period;
+                    pool.nextBid = Bid(address(0), address(0), address(0), 0);
+                }
+            }
+        }
     }
 
     function afterInitialize(address, PoolKey calldata key, uint160, int24, bytes calldata params)
@@ -72,7 +111,8 @@ contract ChronusHook is BaseHook {
         returns (bytes4)
     {
         (bool leaseInToken0) = abi.decode(params, (bool));
-        pools[key.toId()] = PoolState(leaseInToken0, block.timestamp);
+        Bid memory defaultBid = Bid(address(0), address(0), address(0), 0);
+        pools[key.toId()] = PoolState(defaultBid, defaultBid, leaseInToken0, block.timestamp, 0, 0);
 
         return BaseHook.afterInitialize.selector;
     }
@@ -118,13 +158,20 @@ contract ChronusHook is BaseHook {
         Currency feeCurrency = exactOut != params.zeroForOne ? key.currency0 : key.currency1;
 
         // pay fees to highest bidder
-        poolManager.take(feeCurrency, activeBid.feeRecipient, absFees.toUint256());
+        feeCurrency.take(poolManager, activeBid.feeRecipient, absFees.toUint256(), true);
 
         return (this.beforeSwap.selector, toBeforeSwapDelta(absFees.toInt128(), 0), LPFeeLibrary.OVERRIDE_FEE_FLAG);
     }
 
+    /// @notice Deposit tokens into this contract. Deposits are used to cover rent payments as the manager.
+    function depositCollateral(PoolKey calldata key, uint256 amount) external {
+        // Deposit 6909 claim tokens to Uniswap V4 PoolManager. The claim tokens are owned by this contract.
+        poolManager.unlock(abi.encode(CallbackData(key, msg.sender, amount, 0)));
+        collateral[key.toId()][msg.sender] += amount;
+    }
+
     // @notice Pays lease to LPs considering bid IV, liquidity and last paid timestamp
-    function _payLeaseToLps(PoolKey calldata key) internal {
+    function _payLeaseToLps(PoolKey memory key) internal {
         PoolId id = key.toId();
         PoolState storage pool = pools[id];
 
@@ -146,7 +193,8 @@ contract ChronusHook is BaseHook {
 
         collateral[id][pool.activeBid.manager] -= leaseIncentive;
 
-        (uint256 amount0, uint256 amount1) = pool.leaseInToken0 ? (leaseIncentive, 0) : (0, leaseIncentive);
+        uint256 zero = 0;
+        (uint256 amount0, uint256 amount1) = pool.leaseInToken0 ? (leaseIncentive, zero) : (zero, leaseIncentive);
         poolManager.donate(key, amount0, amount1, "");
     }
 

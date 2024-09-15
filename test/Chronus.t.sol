@@ -11,7 +11,7 @@ import {BalanceDelta} from "v4-core/src/types/BalanceDelta.sol";
 import {PoolId, PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
 import {CurrencyLibrary, Currency} from "v4-core/src/types/Currency.sol";
 import {PoolSwapTest} from "v4-core/src/test/PoolSwapTest.sol";
-import {Counter} from "../src/ChronusHook.sol";
+import {ChronusHook} from "../src/ChronusHook.sol";
 import {StateLibrary} from "v4-core/src/libraries/StateLibrary.sol";
 import {PositionConfig} from "v4-periphery/src/libraries/PositionConfig.sol";
 
@@ -28,7 +28,7 @@ contract ChronusHookTest is Test, Fixtures {
     using CurrencyLibrary for Currency;
     using StateLibrary for IPoolManager;
 
-    Counter hook;
+    ChronusHook hook;
     PoolId poolId;
 
     uint256 tokenId;
@@ -54,7 +54,7 @@ contract ChronusHookTest is Test, Fixtures {
         // TODO: Add all the necessary constructor arguments from the hook
         bytes memory constructorArgs = abi.encode(manager);
         deployCodeTo("ChronusHook.sol:ChronusHook", constructorArgs, flags);
-        hook = Counter(flags);
+        hook = ChronusHook(flags);
 
         // Create the pool
         key = PoolKey(currency0, currency1, 3000, 60, IHooks(hook));
@@ -85,8 +85,9 @@ contract ChronusHookTest is Test, Fixtures {
     }
 
     function testAfterInitialize() public {
+        (ChronusHook.Bid memory activeBid,,,,,) = hook.pools(key.toId());
         // pool is initialized with proper strategy
-        assertEq(address(strategy), hook.strategy());
+        assertEq(address(0), activeBid.strategy);
     }
 
     function testTickTvl() public {
@@ -95,7 +96,7 @@ contract ChronusHookTest is Test, Fixtures {
         uint160 sqrtPriceX96 = 1635008161405954009941460910080473;
         uint128 liquidity = 7464885187306878302;
 
-        uint256 annualLease = hook.getAnnualLeaseAmount(poolFee, liquidity, sqrtPriceX96, 1);
+        uint256 annualLease = hook.getAnnualLeaseAmount(poolFee, liquidity, sqrtPriceX96, 1, true);
 
         assertEq(annualLease, 90432138311000);
         uint256 currentLiquidityInToken0 = uint256(liquidity) * 2 ** 96 / sqrtPriceX96 / 2;

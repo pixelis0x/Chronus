@@ -14,12 +14,12 @@ import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
 import {Constants} from "v4-core/src/../test/utils/Constants.sol";
 import {TickMath} from "v4-core/src/libraries/TickMath.sol";
 import {CurrencyLibrary, Currency} from "v4-core/src/types/Currency.sol";
-import {ChronusHook} from "../src/Counter.sol";
+import {ChronusHook} from "../src/ChronusHook.sol";
 import {HookMiner} from "../test/utils/HookMiner.sol";
 
 /// @notice Forge script for deploying v4 & hooks to **anvil**
 /// @dev This script only works on an anvil RPC because v4 exceeds bytecode limits
-contract CounterScript is Script {
+contract ChronusScript is Script {
     address constant CREATE2_DEPLOYER = address(0x4e59b44847b379578588920cA78FbF26c0B4956C);
 
     function setUp() public {}
@@ -42,8 +42,8 @@ contract CounterScript is Script {
         // Deploy the hook using CREATE2 //
         // ----------------------------- //
         vm.broadcast();
-        ChronusHook counter = new Counter{salt: salt}(manager);
-        require(address(counter) == hookAddress, "CounterScript: hook address mismatch");
+        ChronusHook counter = new ChronusHook{salt: salt}(manager);
+        require(address(counter) == hookAddress, "ChronusScript: hook address mismatch");
 
         // Additional helpers for interacting with the pool
         vm.startBroadcast();
