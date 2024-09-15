@@ -58,16 +58,17 @@ contract ChronusHook is BaseHook {
     }
 
     uint24 DEFAULT_SWAP_FEE = 3000;
-    uint256 nextBidDelay = 10 minutes;
     uint256 period = 1 hours;
+    uint256 nextBidDelay = 10 minutes;
 
     mapping(PoolId => mapping(address => uint256)) public collateral;
     mapping(PoolId => PoolState) public pools;
 
-    uint256 MIN_IV_INCREASE = 0.01e6;   // 1%
+    uint256 MIN_IV_INCREASE = 0.01e6; // 1%
 
     constructor(IPoolManager _poolManager) BaseHook(_poolManager) {}
 
+    // @notice Used by managers to place a bid to manage a pool
     function placeBid(PoolKey calldata key, address strategy, address feeRecipient, uint256 leaseIv) external {
         PoolId id = key.toId();
         PoolState storage pool = pools[id];
@@ -82,25 +83,18 @@ contract ChronusHook is BaseHook {
         // TODO: check next bid delay time
         PoolId id = key.toId();
         PoolState storage pool = pools[id];
-        // if there is a next bid and current bid delay is passed
-        if (pool.nextBid.strategy != address(0) && block.timestamp > pool.activeBidLockedUntil) {
-            // if current bid period passed
-            if (block.timestamp > pool.activeBidLockedUntil) {
-                //if next manager is the same as current, just update active bid
-                if (pool.activeBid.manager == pool.nextBid.manager) {
-                    pool.activeBid = pool.nextBid;
-                    pool.activeBidLockedUntil = block.timestamp + period;
-                    pool.nextBid = Bid(address(0), address(0), address(0), 0);
-                }
-                // if next manager is not equal to current, update it only if there is increase in iv or if no active bid
-                else if (
-                    (pool.nextBid.leaseIv > pool.activeBid.leaseIv + MIN_IV_INCREASE)
-                        || pool.activeBid.strategy == address(0)
-                ) {
-                    pool.activeBid = pool.nextBid;
-                    pool.activeBidLockedUntil = block.timestamp + period;
-                    pool.nextBid = Bid(address(0), address(0), address(0), 0);
-                }
+        // if there is a next bid and its bid delay is passed
+        if (pool.nextBid.strategy != address(0) && pool.nextBidDelayedUntil < block.timestamp) {
+            // if next manager is not equal to current, update it only if there is increase in iv or if no active bid
+            if (
+                (
+                    pool.nextBid.leaseIv > pool.activeBid.leaseIv + MIN_IV_INCREASE
+                        && pool.activeBidLockedUntil < block.timestamp
+                ) || pool.activeBid.strategy == address(0)
+            ) {
+                pool.activeBid = pool.nextBid;
+                pool.activeBidLockedUntil = block.timestamp + period;
+                pool.nextBid = Bid(address(0), address(0), address(0), 0);
             }
         }
     }
@@ -175,8 +169,8 @@ contract ChronusHook is BaseHook {
         PoolId id = key.toId();
         PoolState storage pool = pools[id];
 
-        // skip if lease was already paid
-        if (pool.lastPaidTimestamp == block.timestamp) return;
+        // skip if lease was already paid or no active manager
+        if (pool.lastPaidTimestamp == block.timestamp || pool.activeBid.manager == address(0)) return;
 
         // get current pool liquidity
         uint128 liquidity = poolManager.getLiquidity(id);
@@ -186,8 +180,12 @@ contract ChronusHook is BaseHook {
 
         uint256 annualLeaseIncentive =
             getAnnualLeaseAmount(key.fee, liquidity, sqrtPriceX96, pool.activeBid.leaseIv, pool.leaseInToken0);
-
         uint256 leaseIncentive = annualLeaseIncentive * (block.timestamp - pool.lastPaidTimestamp) / 365 days;
+        uint256 managerCollateral = collateral[id][pool.activeBid.manager];
+
+        if (managerCollateral < leaseIncentive) {
+            leaseIncentive = managerCollateral;
+        }
 
         Currency incentiveCurrency = pool.leaseInToken0 ? key.currency0 : key.currency1;
 
@@ -196,6 +194,24 @@ contract ChronusHook is BaseHook {
         uint256 zero = 0;
         (uint256 amount0, uint256 amount1) = pool.leaseInToken0 ? (leaseIncentive, zero) : (zero, leaseIncentive);
         poolManager.donate(key, amount0, amount1, "");
+
+        uint256 liquidationThreshold = annualLeaseIncentive * nextBidDelay / 365 days;
+
+        if (collateral[id][pool.activeBid.manager] < liquidationThreshold) {
+            _liquidateActive(key);
+        }
+    }
+
+    // @notice Resets active bid to allow replacing right away
+    function _liquidateActive(PoolKey memory key) private {
+        PoolId id = key.toId();
+        PoolState storage pool = pools[id];
+        Bid storage activeBid = pool.activeBid;
+
+        Currency incentiveCurrency = pool.leaseInToken0 ? key.currency0 : key.currency1;
+        incentiveCurrency.settle(poolManager, activeBid.manager, collateral[id][activeBid.manager], false);
+        collateral[id][activeBid.manager] = 0;
+        pool.activeBid = Bid(address(0), address(0), address(0), 0);
     }
 
     // @notice Estimates annual liquidity in range lease cost
