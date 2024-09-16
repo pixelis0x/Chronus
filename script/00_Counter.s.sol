@@ -31,7 +31,7 @@ contract CounterScript is Script {
 
         // Deploy the hook using CREATE2
         vm.broadcast();
-        ChronusHook counter = new Counter{salt: salt}(IPoolManager(address(GOERLI_POOLMANAGER)));
+        ChronusHook counter = new ChronusHook{salt: salt}(IPoolManager(address(GOERLI_POOLMANAGER)));
         require(address(counter) == hookAddress, "CounterScript: hook address mismatch");
     }
 }

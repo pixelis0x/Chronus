@@ -36,6 +36,8 @@ contract ChronusHookTest is Test, Fixtures {
 
     IStrategy strategy;
 
+    address manager1 = address(0x1);
+
     function setUp() public {
         // creates the pool manager, utility routers, and test tokens
         deployFreshManagerAndRouters();
@@ -64,7 +66,7 @@ contract ChronusHookTest is Test, Fixtures {
         strategy = new DefaultStrategy();
 
         // Create the pool
-        bytes memory afterInitializeParams = abi.encode(address(strategy));
+        bytes memory afterInitializeParams = abi.encode(true);
         manager.initialize(key, SQRT_PRICE_1_1, afterInitializeParams);
 
         // Provide full-range liquidity to the pool
@@ -82,6 +84,8 @@ contract ChronusHookTest is Test, Fixtures {
             block.timestamp,
             ZERO_BYTES
         );
+
+        seedBalance(manager1);
     }
 
     function testAfterInitialize() public {
@@ -96,14 +100,21 @@ contract ChronusHookTest is Test, Fixtures {
         uint160 sqrtPriceX96 = 1635008161405954009941460910080473;
         uint128 liquidity = 7464885187306878302;
 
-        uint256 annualLease = hook.getAnnualLeaseAmount(poolFee, liquidity, sqrtPriceX96, 1, true);
+        uint256 annualLease = hook.getAnnualLeaseAmount(liquidity, sqrtPriceX96, 1e6, true);
 
-        assertEq(annualLease, 90432138311000);
+        assertEq(annualLease, 90432138311422);
         uint256 currentLiquidityInToken0 = uint256(liquidity) * 2 ** 96 / sqrtPriceX96 / 2;
 
         // check apr
         assertEq(annualLease * 1e6 / currentLiquidityInToken0, 499999); // 50% apr
     }
 
-    function testLeaseIsPaidToLps() public {}
+    function testNextBidIsPlaced() public {
+        // place a bid
+        hook.placeBid(key, address(strategy), manager1, 1e6);
+
+        (ChronusHook.Bid memory activeBid, ChronusHook.Bid memory nextBid,,,,) = hook.pools(poolId);
+        // pool is initialized with proper strategy
+        assertEq(address(strategy), nextBid.strategy);
+    }
 }

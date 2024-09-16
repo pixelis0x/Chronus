@@ -45,7 +45,7 @@ contract ChronusHook is BaseHook {
         address strategy;
         address manager;
         address feeRecipient;
-        uint256 leaseIv;
+        uint256 leaseVolatility;
     }
 
     struct PoolState {
@@ -69,13 +69,13 @@ contract ChronusHook is BaseHook {
     constructor(IPoolManager _poolManager) BaseHook(_poolManager) {}
 
     // @notice Used by managers to place a bid to manage a pool
-    function placeBid(PoolKey calldata key, address strategy, address feeRecipient, uint256 leaseIv) external {
+    function placeBid(PoolKey calldata key, address strategy, address feeRecipient, uint256 leaseVolatility) external {
         PoolId id = key.toId();
         PoolState storage pool = pools[id];
 
         // bid should be MIN_IV_INCREASE higher than another next bid
-        require(leaseIv > pool.nextBid.leaseIv + MIN_IV_INCREASE, "Bid should be higher than next bid");
-        pool.nextBid = Bid(strategy, msg.sender, feeRecipient, leaseIv);
+        require(leaseVolatility > pool.nextBid.leaseVolatility + MIN_IV_INCREASE, "Bid should be higher than next bid");
+        pool.nextBid = Bid(strategy, msg.sender, feeRecipient, leaseVolatility);
         pool.nextBidDelayedUntil = block.timestamp + nextBidDelay;
     }
 
@@ -88,7 +88,7 @@ contract ChronusHook is BaseHook {
             // if next manager is not equal to current, update it only if there is increase in iv or if no active bid
             if (
                 (
-                    pool.nextBid.leaseIv > pool.activeBid.leaseIv + MIN_IV_INCREASE
+                    pool.nextBid.leaseVolatility > pool.activeBid.leaseVolatility + MIN_IV_INCREASE
                         && pool.activeBidLockedUntil < block.timestamp
                 ) || pool.activeBid.strategy == address(0)
             ) {
@@ -179,15 +179,13 @@ contract ChronusHook is BaseHook {
         uint160 sqrtPriceX96 = TickMath.getSqrtPriceAtTick(tick);
 
         uint256 annualLeaseIncentive =
-            getAnnualLeaseAmount(key.fee, liquidity, sqrtPriceX96, pool.activeBid.leaseIv, pool.leaseInToken0);
+            getAnnualLeaseAmount(liquidity, sqrtPriceX96, pool.activeBid.leaseVolatility, pool.leaseInToken0);
         uint256 leaseIncentive = annualLeaseIncentive * (block.timestamp - pool.lastPaidTimestamp) / 365 days;
         uint256 managerCollateral = collateral[id][pool.activeBid.manager];
 
         if (managerCollateral < leaseIncentive) {
             leaseIncentive = managerCollateral;
         }
-
-        Currency incentiveCurrency = pool.leaseInToken0 ? key.currency0 : key.currency1;
 
         collateral[id][pool.activeBid.manager] -= leaseIncentive;
 
@@ -215,23 +213,16 @@ contract ChronusHook is BaseHook {
     }
 
     // @notice Estimates annual liquidity in range lease cost
-    function getAnnualLeaseAmount(
-        uint24 poolFee,
-        uint128 liquidity,
-        uint160 sqrtPriceX96,
-        uint256 leaseIv,
-        bool leaseInToken0
-    )
+    function getAnnualLeaseAmount(uint128 liquidity, uint160 sqrtPriceX96, uint256 leaseVolatility, bool leaseInToken0)
         public // for test purposes
         pure
         returns (uint256)
     {
         //liquidity in current tick from reserves
-        uint256 tickLiquidity = uint256(liquidity) * poolFee / 1e6;
         uint256 tickLiquidityInLeaseToken =
-            leaseInToken0 ? tickLiquidity * 2 ** 96 / sqrtPriceX96 : tickLiquidity * sqrtPriceX96 / 2 ** 96;
+            leaseInToken0 ? uint256(liquidity) * 2 ** 96 / sqrtPriceX96 : uint256(liquidity) * sqrtPriceX96 / 2 ** 96;
 
-        return poolFee * tickLiquidityInLeaseToken * (leaseIv / 2 / poolFee) ** 2 / 1e6;
+        return tickLiquidityInLeaseToken * (leaseVolatility) ** 2 / 1e12 / 4;
     }
 
     function afterSwap(address, PoolKey calldata key, IPoolManager.SwapParams calldata, BalanceDelta, bytes calldata)
