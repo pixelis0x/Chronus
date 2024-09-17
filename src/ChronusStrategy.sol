@@ -11,13 +11,12 @@ interface IStrategy {
 }
 
 /**
- * @title DefaultStrategy
+ * @title ChronusStrategy
  * Strategy that increases the fee linearly over time
  * The fee starts at 0.05% and increases to 1% over 5 minutes
  * The fee is reset to 0.05% when the manager performs an arbitrage
  */
-
-contract DefaultStrategy is IStrategy {
+contract ChronusStrategy is IStrategy {
     using PoolIdLibrary for PoolKey;
 
     uint128 private startFee = 500; // 0.05%

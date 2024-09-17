@@ -20,7 +20,7 @@ import {IERC20} from "forge-std/interfaces/IERC20.sol";
 import {EasyPosm} from "./utils/EasyPosm.sol";
 import {Fixtures} from "./utils/Fixtures.sol";
 
-import {IStrategy, DefaultStrategy} from "../src/DefaultStrategy.sol";
+import {IStrategy, ChronusStrategy} from "../src/ChronusStrategy.sol";
 
 contract ChronusHookTest is Test, Fixtures {
     using EasyPosm for IPositionManager;
@@ -62,7 +62,7 @@ contract ChronusHookTest is Test, Fixtures {
         poolId = key.toId();
 
         // Deploy strategy
-        strategy = new DefaultStrategy(manager1);
+        strategy = new ChronusStrategy(manager1);
 
         // Create the pool
         bytes memory afterInitializeParams = abi.encode(true);

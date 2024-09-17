@@ -19,7 +19,7 @@ import {TickMath} from "v4-core/src/libraries/TickMath.sol";
 import {SqrtPriceMath} from "v4-core/src/libraries/SqrtPriceMath.sol";
 import {BaseHook} from "v4-periphery/src/base/hooks/BaseHook.sol";
 
-import {IStrategy} from "./DefaultStrategy.sol";
+import {IStrategy} from "./ChronusStrategy.sol";
 
 import "forge-std/console.sol";
 
