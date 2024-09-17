@@ -72,52 +72,6 @@ contract ChronusHook is BaseHook {
     error BidIncreaseTooLow();
     error InsufficientCollateral();
 
-    // @notice Used by managers to place a bid to manage a pool
-    function placeBid(PoolKey calldata key, address strategy, address feeRecipient, uint256 leaseVolatility) external {
-        PoolId id = key.toId();
-        PoolState storage pool = pools[id];
-
-        // bid should be MIN_IV_INCREASE higher than another next bid
-        if (leaseVolatility < pool.nextBid.leaseVolatility + MIN_IV_INCREASE) {
-            revert BidIncreaseTooLow();
-        }
-
-        uint128 liquidity = poolManager.getLiquidity(id);
-        // current price, using tick because currently its more pricise than sqrtPriceX96 from slot0
-        (, int24 tick,,) = poolManager.getSlot0(id);
-        uint160 sqrtPriceX96 = TickMath.getSqrtPriceAtTick(tick);
-        uint256 requiredCollateral = getAnnualLeaseAmount(liquidity, sqrtPriceX96, leaseVolatility, pool.leaseInToken0)
-            * (nextBidDelay + epoch) / 365 days;
-
-        // should have enough collateral to cover lease for next epoch
-        if (collateral[id][msg.sender] < requiredCollateral) {
-            revert InsufficientCollateral();
-        }
-
-        pool.nextBid = Bid(strategy, msg.sender, feeRecipient, leaseVolatility);
-        pool.nextBidDelayedUntil = block.timestamp + nextBidDelay;
-    }
-
-    function _proceedWithState(PoolKey memory key) internal {
-        // TODO: check next bid delay time
-        PoolId id = key.toId();
-        PoolState storage pool = pools[id];
-        // if there is a next bid and its bid delay is passed
-        if (pool.nextBid.strategy != address(0) && pool.nextBidDelayedUntil < block.timestamp) {
-            // if next manager is not equal to current, update it only if there is increase in iv or if no active bid
-            if (
-                (
-                    pool.nextBid.leaseVolatility > pool.activeBid.leaseVolatility + MIN_IV_INCREASE
-                        && pool.activeBidLockedUntil < block.timestamp
-                ) || pool.activeBid.strategy == address(0)
-            ) {
-                pool.activeBid = pool.nextBid;
-                pool.activeBidLockedUntil = block.timestamp + epoch;
-                pool.nextBid = Bid(address(0), address(0), address(0), 0);
-            }
-        }
-    }
-
     function afterInitialize(address, PoolKey calldata key, uint160, int24, bytes calldata params)
         external
         override
@@ -139,7 +93,7 @@ contract ChronusHook is BaseHook {
             beforeRemoveLiquidity: true,
             afterRemoveLiquidity: false,
             beforeSwap: true,
-            afterSwap: true,
+            afterSwap: false,
             beforeDonate: false,
             afterDonate: false,
             beforeSwapReturnDelta: true,
@@ -176,7 +130,74 @@ contract ChronusHook is BaseHook {
         return (this.beforeSwap.selector, toBeforeSwapDelta(absFees.toInt128(), 0), LPFeeLibrary.OVERRIDE_FEE_FLAG);
     }
 
-    /// @notice Deposit tokens into this contract. Deposits are used to cover rent payments as the manager.
+    function beforeAddLiquidity(
+        address,
+        PoolKey calldata key,
+        IPoolManager.ModifyLiquidityParams calldata,
+        bytes calldata
+    ) external override returns (bytes4) {
+        _payLeaseToLps(key);
+        return BaseHook.beforeAddLiquidity.selector;
+    }
+
+    function beforeRemoveLiquidity(
+        address,
+        PoolKey calldata key,
+        IPoolManager.ModifyLiquidityParams calldata,
+        bytes calldata
+    ) external override returns (bytes4) {
+        _payLeaseToLps(key);
+        return BaseHook.beforeRemoveLiquidity.selector;
+    }
+
+    // @notice Used by managers to place a bid to manage a pool
+    function placeBid(PoolKey calldata key, address strategy, address feeRecipient, uint256 leaseVolatility) external {
+        PoolId id = key.toId();
+        PoolState storage pool = pools[id];
+
+        // bid should be MIN_IV_INCREASE higher than another next bid
+        if (leaseVolatility < pool.nextBid.leaseVolatility + MIN_IV_INCREASE) {
+            revert BidIncreaseTooLow();
+        }
+
+        uint128 liquidity = poolManager.getLiquidity(id);
+        // current price, using tick because currently its more pricise than sqrtPriceX96 from slot0
+        (, int24 tick,,) = poolManager.getSlot0(id);
+        uint160 sqrtPriceX96 = TickMath.getSqrtPriceAtTick(tick);
+        uint256 requiredCollateral = getAnnualLeaseAmount(liquidity, sqrtPriceX96, leaseVolatility, pool.leaseInToken0)
+            * (nextBidDelay + epoch) / 365 days;
+
+        // should have enough collateral to cover lease for next epoch
+        if (collateral[id][msg.sender] < requiredCollateral) {
+            revert InsufficientCollateral();
+        }
+
+        pool.nextBid = Bid(strategy, msg.sender, feeRecipient, leaseVolatility);
+        pool.nextBidDelayedUntil = block.timestamp + nextBidDelay;
+    }
+
+    // @notice Changes state if some terms are met. Active manager may be liuqidated during lease payment, so here we just set new one
+    // TODO: add ability for active manager to lower fee if his bid is highest
+    function _proceedWithState(PoolKey memory key) internal {
+        PoolId id = key.toId();
+        PoolState storage pool = pools[id];
+        // if there is a next bid and its bid delay is passed
+        if (pool.nextBid.strategy != address(0) && pool.nextBidDelayedUntil < block.timestamp) {
+            // if next manager is not equal to current, update it only if there is increase in iv or if no active bid
+            if (
+                (
+                    pool.nextBid.leaseVolatility > pool.activeBid.leaseVolatility + MIN_IV_INCREASE
+                        && pool.activeBidLockedUntil < block.timestamp
+                ) || pool.activeBid.strategy == address(0)
+            ) {
+                pool.activeBid = pool.nextBid;
+                pool.activeBidLockedUntil = block.timestamp + epoch;
+                pool.nextBid = Bid(address(0), address(0), address(0), 0);
+            }
+        }
+    }
+
+    // @notice Deposit tokens into this contract. Deposits are used to cover rent payments as the manager.
     function depositCollateral(PoolKey calldata key, uint256 amount) external {
         // Deposit 6909 claim tokens to Uniswap V4 PoolManager. The claim tokens are owned by this contract.
         poolManager.unlock(abi.encode(CallbackData(key, msg.sender, amount, 0)));
@@ -272,34 +293,6 @@ contract ChronusHook is BaseHook {
             leaseInToken0 ? uint256(liquidity) * 2 ** 96 / sqrtPriceX96 : uint256(liquidity) * sqrtPriceX96 / 2 ** 96;
 
         return tickLiquidityInLeaseToken * (leaseVolatility) ** 2 / 1e12 / 4;
-    }
-
-    function afterSwap(address, PoolKey calldata key, IPoolManager.SwapParams calldata, BalanceDelta, bytes calldata)
-        external
-        override
-        returns (bytes4, int128)
-    {
-        return (BaseHook.afterSwap.selector, 0);
-    }
-
-    function beforeAddLiquidity(
-        address,
-        PoolKey calldata key,
-        IPoolManager.ModifyLiquidityParams calldata,
-        bytes calldata
-    ) external override returns (bytes4) {
-        _payLeaseToLps(key);
-        return BaseHook.beforeAddLiquidity.selector;
-    }
-
-    function beforeRemoveLiquidity(
-        address,
-        PoolKey calldata key,
-        IPoolManager.ModifyLiquidityParams calldata,
-        bytes calldata
-    ) external override returns (bytes4) {
-        _payLeaseToLps(key);
-        return BaseHook.beforeRemoveLiquidity.selector;
     }
 
     /// @notice Deposit/withdraw claim tokens

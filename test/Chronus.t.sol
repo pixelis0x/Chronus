@@ -48,9 +48,8 @@ contract ChronusHookTest is Test, Fixtures {
         // Deploy the hook to an address with the correct flags
         address flags = address(
             uint160(
-                Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.BEFORE_ADD_LIQUIDITY_FLAG
-                    | Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG | Hooks.AFTER_INITIALIZE_FLAG
-                    | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG
+                Hooks.BEFORE_SWAP_FLAG | Hooks.BEFORE_ADD_LIQUIDITY_FLAG | Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG
+                    | Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG
             ) ^ (0x4444 << 144) // Namespace the hook to avoid collisions
         );
         // TODO: Add all the necessary constructor arguments from the hook
