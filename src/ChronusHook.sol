@@ -57,9 +57,10 @@ contract ChronusHook is BaseHook {
         uint256 nextBidDelayedUntil;
     }
 
+    // TODO: set in afterInitialize
     uint24 DEFAULT_SWAP_FEE = 3000;
-    uint256 period = 1 hours;
-    uint256 nextBidDelay = 10 minutes;
+    uint256 epoch = 1 hours;
+    uint256 nextBidDelay = 5 minutes;
 
     mapping(PoolId => mapping(address => uint256)) public collateral;
     mapping(PoolId => PoolState) public pools;
@@ -68,18 +69,36 @@ contract ChronusHook is BaseHook {
 
     constructor(IPoolManager _poolManager) BaseHook(_poolManager) {}
 
+    error BidIncreaseTooLow();
+    error InsufficientCollateral();
+
     // @notice Used by managers to place a bid to manage a pool
     function placeBid(PoolKey calldata key, address strategy, address feeRecipient, uint256 leaseVolatility) external {
         PoolId id = key.toId();
         PoolState storage pool = pools[id];
 
         // bid should be MIN_IV_INCREASE higher than another next bid
-        require(leaseVolatility > pool.nextBid.leaseVolatility + MIN_IV_INCREASE, "Bid should be higher than next bid");
+        if (leaseVolatility < pool.nextBid.leaseVolatility + MIN_IV_INCREASE) {
+            revert BidIncreaseTooLow();
+        }
+
+        uint128 liquidity = poolManager.getLiquidity(id);
+        // current price, using tick because currently its more pricise than sqrtPriceX96 from slot0
+        (, int24 tick,,) = poolManager.getSlot0(id);
+        uint160 sqrtPriceX96 = TickMath.getSqrtPriceAtTick(tick);
+        uint256 requiredCollateral = getAnnualLeaseAmount(liquidity, sqrtPriceX96, leaseVolatility, pool.leaseInToken0)
+            * (nextBidDelay + epoch) / 365 days;
+
+        // should have enough collateral to cover lease for next epoch
+        if (collateral[id][msg.sender] < requiredCollateral) {
+            revert InsufficientCollateral();
+        }
+
         pool.nextBid = Bid(strategy, msg.sender, feeRecipient, leaseVolatility);
         pool.nextBidDelayedUntil = block.timestamp + nextBidDelay;
     }
 
-    function _proceedWithState(PoolKey calldata key) internal {
+    function _proceedWithState(PoolKey memory key) internal {
         // TODO: check next bid delay time
         PoolId id = key.toId();
         PoolState storage pool = pools[id];
@@ -93,7 +112,7 @@ contract ChronusHook is BaseHook {
                 ) || pool.activeBid.strategy == address(0)
             ) {
                 pool.activeBid = pool.nextBid;
-                pool.activeBidLockedUntil = block.timestamp + period;
+                pool.activeBidLockedUntil = block.timestamp + epoch;
                 pool.nextBid = Bid(address(0), address(0), address(0), 0);
             }
         }
@@ -164,23 +183,35 @@ contract ChronusHook is BaseHook {
         collateral[key.toId()][msg.sender] += amount;
     }
 
+    // @notice Withdraw claim tokens
+    function withdrawCollateral(PoolKey calldata key, uint256 amount) external {
+        poolManager.unlock(abi.encode(CallbackData(key, msg.sender, 0, amount)));
+        collateral[key.toId()][msg.sender] -= amount;
+
+        Bid storage activeBid = pools[key.toId()].activeBid;
+
+        if (activeBid.manager == msg.sender) {
+            uint256 timeToBillLeft = pools[key.toId()].activeBidLockedUntil - block.timestamp + nextBidDelay;
+
+            if (collateral[key.toId()][msg.sender] < getLeaseAmountForPeriod(key, timeToBillLeft)) {
+                revert InsufficientCollateral();
+            }
+        }
+    }
+
     // @notice Pays lease to LPs considering bid IV, liquidity and last paid timestamp
     function _payLeaseToLps(PoolKey memory key) internal {
         PoolId id = key.toId();
         PoolState storage pool = pools[id];
 
         // skip if lease was already paid or no active manager
-        if (pool.lastPaidTimestamp == block.timestamp || pool.activeBid.manager == address(0)) return;
+        if (pool.lastPaidTimestamp == block.timestamp || pool.activeBid.manager == address(0)) {
+            return _proceedWithState(key);
+        }
 
-        // get current pool liquidity
-        uint128 liquidity = poolManager.getLiquidity(id);
-        // current price, using tick because currently its more pricise than sqrtPriceX96 from slot0
-        (, int24 tick,,) = poolManager.getSlot0(id);
-        uint160 sqrtPriceX96 = TickMath.getSqrtPriceAtTick(tick);
+        uint256 incentivePeriod = block.timestamp - pool.lastPaidTimestamp;
 
-        uint256 annualLeaseIncentive =
-            getAnnualLeaseAmount(liquidity, sqrtPriceX96, pool.activeBid.leaseVolatility, pool.leaseInToken0);
-        uint256 leaseIncentive = annualLeaseIncentive * (block.timestamp - pool.lastPaidTimestamp) / 365 days;
+        uint256 leaseIncentive = getLeaseAmountForPeriod(key, incentivePeriod);
         uint256 managerCollateral = collateral[id][pool.activeBid.manager];
 
         if (managerCollateral < leaseIncentive) {
@@ -193,11 +224,29 @@ contract ChronusHook is BaseHook {
         (uint256 amount0, uint256 amount1) = pool.leaseInToken0 ? (leaseIncentive, zero) : (zero, leaseIncentive);
         poolManager.donate(key, amount0, amount1, "");
 
-        uint256 liquidationThreshold = annualLeaseIncentive * nextBidDelay / 365 days;
+        uint256 liquidationThreshold = leaseIncentive * incentivePeriod / nextBidDelay;
 
         if (collateral[id][pool.activeBid.manager] < liquidationThreshold) {
             _liquidateActive(key);
         }
+
+        _proceedWithState(key);
+    }
+
+    // @notice Returns lease amount to pay for given period
+    function getLeaseAmountForPeriod(PoolKey memory key, uint256 time) public view returns (uint256) {
+        PoolId id = key.toId();
+        PoolState storage pool = pools[id];
+
+        // get current pool liquidity
+        uint128 liquidity = poolManager.getLiquidity(id);
+        // current price, using tick because currently its more pricise than sqrtPriceX96 from slot0
+        (, int24 tick,,) = poolManager.getSlot0(id);
+        uint160 sqrtPriceX96 = TickMath.getSqrtPriceAtTick(tick);
+        uint256 annualLeaseIncentive =
+            getAnnualLeaseAmount(liquidity, sqrtPriceX96, pool.activeBid.leaseVolatility, pool.leaseInToken0);
+        console.log("annualLeaseIncentive", annualLeaseIncentive);
+        return annualLeaseIncentive * time / 365 days;
     }
 
     // @notice Resets active bid to allow replacing right away
@@ -253,7 +302,7 @@ contract ChronusHook is BaseHook {
         return BaseHook.beforeRemoveLiquidity.selector;
     }
 
-    /// @notice Deposit or withdraw 6909 claim tokens and distribute rent to LPs.
+    /// @notice Deposit/withdraw claim tokens
     function _unlockCallback(bytes calldata rawData) internal override returns (bytes memory) {
         CallbackData memory data = abi.decode(rawData, (CallbackData));
 

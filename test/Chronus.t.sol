@@ -14,8 +14,8 @@ import {PoolSwapTest} from "v4-core/src/test/PoolSwapTest.sol";
 import {ChronusHook} from "../src/ChronusHook.sol";
 import {StateLibrary} from "v4-core/src/libraries/StateLibrary.sol";
 import {PositionConfig} from "v4-periphery/src/libraries/PositionConfig.sol";
-
 import {IPositionManager} from "v4-periphery/src/interfaces/IPositionManager.sol";
+import {IERC20} from "forge-std/interfaces/IERC20.sol";
 
 import {EasyPosm} from "./utils/EasyPosm.sol";
 import {Fixtures} from "./utils/Fixtures.sol";
@@ -36,7 +36,7 @@ contract ChronusHookTest is Test, Fixtures {
 
     IStrategy strategy;
 
-    address manager1 = address(0x1);
+    address manager1 = address(0x11);
 
     function setUp() public {
         // creates the pool manager, utility routers, and test tokens
@@ -77,7 +77,7 @@ contract ChronusHookTest is Test, Fixtures {
         });
         (tokenId,) = posm.mint(
             config,
-            10_000e18,
+            1e12,
             MAX_SLIPPAGE_ADD_LIQUIDITY,
             MAX_SLIPPAGE_ADD_LIQUIDITY,
             address(this),
@@ -86,6 +86,9 @@ contract ChronusHookTest is Test, Fixtures {
         );
 
         seedBalance(manager1);
+        vm.prank(manager1);
+        IERC20(Currency.unwrap(currency0)).approve(address(hook), type(uint256).max);
+        IERC20(Currency.unwrap(currency1)).approve(address(hook), type(uint256).max);
     }
 
     function testAfterInitialize() public {
@@ -96,7 +99,6 @@ contract ChronusHookTest is Test, Fixtures {
 
     function testTickTvl() public {
         // real world estimations check for usdc-weth 0.05% pool
-        uint24 poolFee = 500;
         uint160 sqrtPriceX96 = 1635008161405954009941460910080473;
         uint128 liquidity = 7464885187306878302;
 
@@ -110,11 +112,48 @@ contract ChronusHookTest is Test, Fixtures {
     }
 
     function testNextBidIsPlaced() public {
-        // place a bid
-        hook.placeBid(key, address(strategy), manager1, 1e6);
+        uint256 iv = 0.1e6; //10%
+        vm.prank(manager1);
+        // fails since no collateral
+        vm.expectRevert(abi.encodeWithSelector(ChronusHook.InsufficientCollateral.selector));
+        hook.placeBid(key, address(strategy), manager1, iv);
+
+        vm.prank(manager1);
+        hook.depositCollateral(key, 1e6);
+
+        vm.prank(manager1);
+        // succeds because collateral is enough
+        hook.placeBid(key, address(strategy), manager1, iv);
 
         (ChronusHook.Bid memory activeBid, ChronusHook.Bid memory nextBid,,,,) = hook.pools(poolId);
         // pool is initialized with proper strategy
-        assertEq(address(strategy), nextBid.strategy);
+        assertEq(nextBid.strategy, address(strategy));
+    }
+
+    function testNextBidBecomesActive() public {
+        uint256 iv = 0.1e6; //10%
+        vm.prank(manager1);
+        hook.depositCollateral(key, 1e6);
+
+        vm.prank(manager1);
+        hook.placeBid(key, address(strategy), manager1, iv);
+
+        //trigger swap bidders state update
+        swap(key, true, 1e4, "");
+        (ChronusHook.Bid memory activeBid, ChronusHook.Bid memory nextBid,,,,) = hook.pools(poolId);
+        // pool is initialized with proper strategy
+        assertEq(nextBid.strategy, address(strategy));
+        assertEq(activeBid.strategy, address(0));
+
+        // make 10 minutes pass
+        vm.warp(block.timestamp + 601);
+
+        //next manager becomes active after time passes
+        //trigger swap bidders state update
+        swap(key, true, 1e4, "");
+        (activeBid, nextBid,,,,) = hook.pools(poolId);
+        // pool is initialized with proper strategy
+        assertEq(nextBid.strategy, address(0));
+        assertEq(activeBid.strategy, address(strategy));
     }
 }
