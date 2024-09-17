@@ -63,7 +63,7 @@ contract ChronusHookTest is Test, Fixtures {
         poolId = key.toId();
 
         // Deploy strategy
-        strategy = new DefaultStrategy();
+        strategy = new DefaultStrategy(manager1);
 
         // Create the pool
         bytes memory afterInitializeParams = abi.encode(true);

@@ -149,7 +149,7 @@ contract ChronusHook is BaseHook {
         });
     }
 
-    function beforeSwap(address, PoolKey calldata key, IPoolManager.SwapParams calldata params, bytes calldata)
+    function beforeSwap(address caller, PoolKey calldata key, IPoolManager.SwapParams calldata params, bytes calldata)
         external
         override
         returns (bytes4, BeforeSwapDelta, uint24)
@@ -163,7 +163,7 @@ contract ChronusHook is BaseHook {
                 (this.beforeSwap.selector, toBeforeSwapDelta(0, 0), DEFAULT_SWAP_FEE | LPFeeLibrary.OVERRIDE_FEE_FLAG);
         }
 
-        uint128 fee = IStrategy(activeBid.strategy).getFee();
+        uint128 fee = IStrategy(activeBid.strategy).getFee(caller, key, params);
         int256 fees = params.amountSpecified * uint256(fee).toInt256() / 1e6;
         int256 absFees = fees > 0 ? fees : -fees;
 
