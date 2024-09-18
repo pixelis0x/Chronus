@@ -1,4 +1,5 @@
 # Chronus 
+![bkivq1s2x7dc1](https://github.com/user-attachments/assets/98b1a758-d66a-42ba-ace0-81ceb423740a)
 ### **Volatility auction managed AMM**
 ---
 Allows strategists to make bets on future volatility. Onchain model estimate fee APR corresponding to current liquidity in range
